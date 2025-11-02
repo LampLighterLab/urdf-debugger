@@ -1,0 +1,7 @@
+I would like to create a light-weight tool for URDF files, to validate and fix them for physical consistency, both as a visual (GUI) tool and a CLI tool.
+The idea is to build something similar to the repo found in `../urdf-loaders`, so take a look at that repo. The code, however, should be in python.
+In particular, I'd like to be able to visualize the joints and their coordinate frames, the collision boxes, and the inertia tensors.
+I'd like to be able to be able to select specific links/joints, and verify if they are the same (or at least symmetric), and flag in which ways they are not.
+I'd like to get checks on the inertia tensor for physical plausibility, checking for triangle inequality, positive-definiteness, and that the ratio in eigenvalues is not unrealistically large. In particular, I'd like to get a automatic comparison of the inertia tensor compared to the visual/collision-box geometry, and an automatic computation of what the estimated density of the material would need to be.
+
+Let's start step-by-step. For starters, please sketch out your plan for making this code-base, with a focus on how different parts interact. List out the tests that should be created. Then let's have the first script that loads one of the example URDFs (in the folder robots), and just visualizes the kinematic tree. Start with the unit-tests related with this step.
