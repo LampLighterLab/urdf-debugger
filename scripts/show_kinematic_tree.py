@@ -28,13 +28,7 @@ def list_robot_urdfs(robots_root: Path) -> dict[str, list[Path]]:
     for robot_dir in sorted(robots_root.iterdir(), key=lambda p: p.name.lower()):
         if not robot_dir.is_dir():
             continue
-        urdf_dir = robot_dir / "urdf"
-        if not urdf_dir.is_dir():
-            continue
-        urdfs = sorted(
-            (path for path in urdf_dir.glob("*.urdf") if path.is_file()),
-            key=lambda p: p.name.lower(),
-        )
+        urdfs = _list_directory_urdfs(robot_dir)
         if urdfs:
             mapping[robot_dir.name] = urdfs
     return mapping
@@ -70,18 +64,22 @@ def prompt_choice(
 
 
 def _list_directory_urdfs(directory: Path) -> list[Path]:
-    direct = sorted(
-        (p for p in directory.glob("*.urdf") if p.is_file()),
-        key=lambda p: p.name.lower(),
-    )
+    def _collect(root: Path) -> list[Path]:
+        return sorted(
+            (
+                path
+                for path in root.iterdir()
+                if path.is_file() and path.suffix.lower() == ".urdf"
+            ),
+            key=lambda p: p.name.lower(),
+        )
+
+    direct = _collect(directory)
     if direct:
         return direct
     nested = directory / "urdf"
     if nested.is_dir():
-        return sorted(
-            (p for p in nested.glob("*.urdf") if p.is_file()),
-            key=lambda p: p.name.lower(),
-        )
+        return _collect(nested)
     return []
 
 
@@ -95,6 +93,7 @@ def resolve_urdf_path(
     """Resolve the URDF path from an optional name or direct path."""
 
     robots = list_robot_urdfs(robots_root)
+    name_lookup = {name.lower(): name for name in robots}
 
     if target:
         candidate = Path(target).expanduser()
@@ -113,11 +112,12 @@ def resolve_urdf_path(
                 print_fn=print_fn,
             )
             return urdfs[index].resolve()
-        robot_name = target
-        if robot_name not in robots:
+        robot_key = target.lower()
+        if robot_key not in name_lookup:
             raise FileNotFoundError(
-                f"Robot {robot_name!r} not found under {robots_root}."
+                f"Robot {target!r} not found under {robots_root}."
             )
+        robot_name = name_lookup[robot_key]
         urdf_candidates = robots[robot_name]
     else:
         if not robots:
