@@ -1,10 +1,6 @@
 import pytest
 
-from scripts.show_kinematic_tree import (
-    ROBOTS_DIR,
-    list_robot_urdfs,
-    resolve_urdf_path,
-)
+from physcheck.scripts.show_kinematic_tree import ROBOTS_DIR, list_robot_urdfs, resolve_urdf_path
 
 
 def _silent_print(_: str) -> None:  # pragma: no cover - helper for tests
