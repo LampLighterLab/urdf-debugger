@@ -3,10 +3,13 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import sys
+from typing import Callable, Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+ROBOTS_DIR = PROJECT_ROOT / "robots"
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -15,14 +18,143 @@ from physcheck.urdf import build_kinematic_tree, load_urdf
 from physcheck.visualization import compute_tree_layout
 
 
+def list_robot_urdfs(robots_root: Path) -> dict[str, list[Path]]:
+    """Return a mapping of robot names to URDF files beneath ``robots_root``."""
+
+    if not robots_root.exists():
+        return {}
+
+    mapping: dict[str, list[Path]] = {}
+    for robot_dir in sorted(robots_root.iterdir(), key=lambda p: p.name.lower()):
+        if not robot_dir.is_dir():
+            continue
+        urdf_dir = robot_dir / "urdf"
+        if not urdf_dir.is_dir():
+            continue
+        urdfs = sorted(
+            (path for path in urdf_dir.glob("*.urdf") if path.is_file()),
+            key=lambda p: p.name.lower(),
+        )
+        if urdfs:
+            mapping[robot_dir.name] = urdfs
+    return mapping
+
+
+def prompt_choice(
+    prompt: str,
+    options: Sequence[str],
+    input_fn: Callable[[str], str] = input,
+    print_fn: Callable[[str], None] = print,
+) -> int:
+    """Prompt the user to choose from ``options`` and return the selected index."""
+
+    if not options:
+        raise ValueError("No options available for selection.")
+    if len(options) == 1:
+        return 0
+
+    while True:
+        print_fn("")
+        print_fn(prompt)
+        for idx, option in enumerate(options, start=1):
+            print_fn(f"  {idx}. {option}")
+        response = input_fn("Enter selection number: ").strip()
+        try:
+            index = int(response)
+        except ValueError:
+            print_fn("Please enter a valid integer selection.")
+            continue
+        if 1 <= index <= len(options):
+            return index - 1
+        print_fn(f"Selection must be between 1 and {len(options)}.")
+
+
+def _list_directory_urdfs(directory: Path) -> list[Path]:
+    direct = sorted(
+        (p for p in directory.glob("*.urdf") if p.is_file()),
+        key=lambda p: p.name.lower(),
+    )
+    if direct:
+        return direct
+    nested = directory / "urdf"
+    if nested.is_dir():
+        return sorted(
+            (p for p in nested.glob("*.urdf") if p.is_file()),
+            key=lambda p: p.name.lower(),
+        )
+    return []
+
+
+def resolve_urdf_path(
+    target: str | None,
+    robots_root: Path,
+    *,
+    input_fn: Callable[[str], str] = input,
+    print_fn: Callable[[str], None] = print,
+) -> Path:
+    """Resolve the URDF path from an optional name or direct path."""
+
+    robots = list_robot_urdfs(robots_root)
+
+    if target:
+        candidate = Path(target).expanduser()
+        if candidate.is_file():
+            return candidate.resolve()
+        if candidate.is_dir():
+            urdfs = _list_directory_urdfs(candidate)
+            if not urdfs:
+                raise FileNotFoundError(f"No URDF files found under {candidate}")
+            if len(urdfs) == 1:
+                return urdfs[0].resolve()
+            index = prompt_choice(
+                f"Select URDF file inside {candidate}:",
+                [path.name for path in urdfs],
+                input_fn=input_fn,
+                print_fn=print_fn,
+            )
+            return urdfs[index].resolve()
+        robot_name = target
+        if robot_name not in robots:
+            raise FileNotFoundError(
+                f"Robot {robot_name!r} not found under {robots_root}."
+            )
+        urdf_candidates = robots[robot_name]
+    else:
+        if not robots:
+            raise FileNotFoundError(f"No robots found under {robots_root}.")
+        robot_names = list(robots.keys())
+        index = prompt_choice(
+            "Select a robot:",
+            robot_names,
+            input_fn=input_fn,
+            print_fn=print_fn,
+        )
+        robot_name = robot_names[index]
+        urdf_candidates = robots[robot_name]
+
+    if len(urdf_candidates) == 1:
+        return urdf_candidates[0].resolve()
+
+    index = prompt_choice(
+        f"Select a URDF for {robot_name}:",
+        [path.name for path in urdf_candidates],
+        input_fn=input_fn,
+        print_fn=print_fn,
+    )
+    return urdf_candidates[index].resolve()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Visualize the kinematic tree of a URDF file."
     )
     parser.add_argument(
-        "urdf_path",
-        type=Path,
-        help="Path to the URDF file to load.",
+        "target",
+        nargs="?",
+        help=(
+            "Robot name (e.g. 'cartpole') or path to a URDF file. "
+            "If omitted, an interactive selector will be shown."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -33,7 +165,9 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def draw_tree(graph: nx.DiGraph, positions: dict[str, tuple[float, float]], title: str):
+def draw_tree(
+    graph: nx.DiGraph, positions: dict[str, tuple[float, float]], title: str
+):
     fig, ax = plt.subplots(figsize=(8, 6))
     nx.draw_networkx(
         graph,
@@ -57,7 +191,13 @@ def draw_tree(graph: nx.DiGraph, positions: dict[str, tuple[float, float]], titl
 
 def main():
     args = parse_args()
-    model = load_urdf(args.urdf_path)
+    try:
+        urdf_path = resolve_urdf_path(args.target, ROBOTS_DIR)
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    model = load_urdf(urdf_path)
     tree = build_kinematic_tree(model)
     graph = tree.to_networkx()
     positions = compute_tree_layout(tree)
