@@ -74,19 +74,16 @@ def build_tree_scene(
         collision_fill = "#66bb6a"
         if has_collision:
             fill = collision_fill
-            font_color = "#ffffff"
         elif has_inertia:
             fill = "#e3f2fd"
-            font_color = "#0d47a1"
         else:
             fill = "#eceff1"
-            font_color = "#37474f"
         outline = outline_color
         visual_style = {
             "shape": "ellipse" if has_inertia else "rectangle",
             "fill": fill,
             "outline": outline,
-            "font_color": font_color,
+            "font_color": "#000000",
             "outline_width": outline_width,
         }
         nodes.append(
@@ -134,31 +131,42 @@ def build_tree_scene(
 
 def _derive_status_style(
     checks: List[InertiaCheck], has_inertia: bool
-) -> Tuple[str, int, List[Tuple[str, str]]]:
+) -> Tuple[str, int, List[Dict[str, Any]]]:
     severity_rank = {"error": 2, "warning": 1, "info": 0}
     best_severity = "info"
     max_rank = -1
-    formatted: List[Tuple[str, str]] = []
+    formatted: List[Dict[str, Any]] = []
 
     for check in checks:
         if check.passed:
             status = "OK"
             severity = "info"
-            text = check.check
         elif check.severity == "warning":
             status = "WARN"
             severity = "warning"
-            text = _format_message(check)
         else:
             status = "FAIL"
             severity = "error"
-            text = _format_message(check)
 
         rank = severity_rank.get(severity, 0)
         if rank > max_rank:
             max_rank = rank
             best_severity = severity
-        formatted.append((status, text))
+
+        description = check.message or ""
+        detail_text = _format_message(check)
+        formatted.append(
+            {
+                "status": status,
+                "severity": severity,
+                "headline": check.check,
+                "summary": description or detail_text,
+                "detail_text": detail_text,
+                "details": dict(check.details),
+                "passed": check.passed,
+                "raw_check": check,
+            }
+        )
 
     if best_severity == "error":
         outline = "#c62828"
