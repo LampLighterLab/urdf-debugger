@@ -998,7 +998,7 @@ class _DetailWindow:
     @staticmethod
     def _format_number(value: float) -> str:
         try:
-            return f"{float(value):.3g}"
+            return f"{float(value):.3e}"
         except (TypeError, ValueError):
             return str(value)
 

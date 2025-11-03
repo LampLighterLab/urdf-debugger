@@ -205,6 +205,6 @@ def _format_detail_value(value: Any) -> Any:
 
 def _format_number(number: float) -> str:
     try:
-        return f"{float(number):.3g}"
+        return f"{float(number):.3e}"
     except (TypeError, ValueError):
         return str(number)
