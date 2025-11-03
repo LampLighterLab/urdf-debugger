@@ -3,11 +3,43 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
+import numpy as np
+
 from physcheck.analysis.inertia import InertiaCheck
 
 from .tree import KinematicTree, compute_tree_layout
 
 Position = Tuple[float, float]
+
+
+def _estimate_collision_eigenvalues(
+    collisions: Iterable[Any], mass: float
+) -> Optional[np.ndarray]:
+    if not np.isfinite(mass) or mass <= 0.0:
+        return None
+
+    for collision in collisions:
+        geom = getattr(collision, "geometry", None)
+        if geom is None:
+            continue
+        gtype = getattr(geom, "type", "")
+        if gtype == "box" and geom.size:
+            lx, ly, lz = geom.size
+            ixx = (mass / 12.0) * (ly ** 2 + lz ** 2)
+            iyy = (mass / 12.0) * (lx ** 2 + lz ** 2)
+            izz = (mass / 12.0) * (lx ** 2 + ly ** 2)
+            return np.array([ixx, iyy, izz], dtype=float)
+        if gtype == "cylinder" and geom.radius and geom.length:
+            r = geom.radius
+            L = geom.length
+            ixx = iyy = (mass / 12.0) * (3.0 * r ** 2 + L ** 2)
+            izz = 0.5 * mass * r ** 2
+            return np.array([ixx, iyy, izz], dtype=float)
+        if gtype == "sphere" and geom.radius:
+            r = geom.radius
+            moment = 0.4 * mass * r ** 2
+            return np.array([moment, moment, moment], dtype=float)
+    return None
 
 
 @dataclass(slots=True)
@@ -61,6 +93,10 @@ def build_tree_scene(
         outline_color, outline_width, status_entries = _derive_status_style(
             checks, has_inertia
         )
+        expected = None
+        if link.collisions and link.inertial is not None:
+            estimated = _estimate_collision_eigenvalues(link.collisions, link.inertial.mass)
+            expected = estimated.tolist() if estimated is not None else None
         payload = {
             "link": link,
             "inertial": link.inertial,
@@ -70,6 +106,11 @@ def build_tree_scene(
             "has_collision": has_collision,
             "checks": checks,
             "check_entries": status_entries,
+            "visualization": {
+                "mass": link.inertial.mass if link.inertial else None,
+                "inertia_tensor": list(link.inertial.inertia) if link.inertial else None,
+                "expected_eigenvalues": expected,
+            },
         }
         collision_fill = "#66bb6a"
         if has_collision:

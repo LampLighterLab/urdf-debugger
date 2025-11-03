@@ -9,6 +9,7 @@ from tkinter import font as tkfont
 import numpy as np
 
 from physcheck.visualization import TreeScene
+from physcheck.visualization.scene import _estimate_collision_eigenvalues
 
 Position = Tuple[float, float]
 
@@ -40,38 +41,6 @@ def _inertia_tensor_to_matrix(
         ],
         dtype=float,
     )
-
-
-def _estimate_collision_eigenvalues(
-    collisions: Iterable[Any], mass: float
-) -> Optional[np.ndarray]:
-    if not np.isfinite(mass) or mass <= 0.0:
-        return None
-
-    for collision in collisions:
-        geom = getattr(collision, "geometry", None)
-        if geom is None:
-            continue
-        gtype = getattr(geom, "type", "")
-        if gtype == "box" and geom.size:
-            lx, ly, lz = geom.size
-            ixx = (mass / 12.0) * (ly ** 2 + lz ** 2)
-            iyy = (mass / 12.0) * (lx ** 2 + lz ** 2)
-            izz = (mass / 12.0) * (lx ** 2 + ly ** 2)
-            return np.array([ixx, iyy, izz], dtype=float)
-        if gtype == "cylinder" and geom.radius and geom.length:
-            r = geom.radius
-            L = geom.length
-            ixx = iyy = (mass / 12.0) * (3.0 * r ** 2 + L ** 2)
-            izz = 0.5 * mass * r ** 2
-            return np.array([ixx, iyy, izz], dtype=float)
-        if gtype == "sphere" and geom.radius:
-            r = geom.radius
-            moment = 0.4 * mass * r ** 2
-            return np.array([moment, moment, moment], dtype=float)
-    return None
-
-
 class TkTreeViewer:
     """Render a kinematic tree scene using Tkinter."""
 
@@ -362,20 +331,7 @@ class _TreeCanvas(tk.Canvas):
                     "inertia_matrix",
                     _inertia_tensor_to_matrix(tensor).tolist(),
                 )
-        details = result.get("details")
-        if not isinstance(details, dict):
-            details = {}
-            result["details"] = details
-        mass_value = result.get("mass")
-        if (
-            mass_value is not None
-            and link is not None
-            and not details.get("expected_eigenvalues")
-        ):
-            collisions = getattr(link, "collisions", ())
-            estimated = _estimate_collision_eigenvalues(collisions, float(mass_value))
-            if estimated is not None:
-                details["expected_eigenvalues"] = estimated.tolist()
+        result.setdefault("visualization", node_payload.get("visualization", {}))
         return result
 
 
@@ -1012,8 +968,11 @@ class _DetailWindow:
             return
 
         matrix_data = entry.get("inertia_matrix")
-        mass = entry.get("mass")
-        details = entry.get("details") or {}
+        viz_payload = entry.get("visualization") or {}
+        mass = viz_payload.get("mass") or entry.get("mass")
+        details = dict(entry.get("details") or {})
+        if not details.get("expected_eigenvalues") and viz_payload.get("expected_eigenvalues"):
+            details["expected_eigenvalues"] = viz_payload.get("expected_eigenvalues")
 
         if matrix_data is None or mass is None:
             self._show_viz_message("Inertia data unavailable.")
