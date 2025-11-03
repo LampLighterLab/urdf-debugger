@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import tkinter as tk
 from tkinter import font as tkfont
@@ -16,6 +16,20 @@ _JOINT_LABELS = {
     "prismatic": "Joint: prismatic",
     "planar": "Joint: planar",
     "fixed": "Joint: fixed",
+}
+
+_STATUS_ICONS = {
+    "OK": "🟢",
+    "WARN": "🟡",
+    "FAIL": "🔴",
+    "INFO": "🔹",
+}
+
+_STATUS_COLORS = {
+    "OK": "#2e7d32",
+    "WARN": "#f9a825",
+    "FAIL": "#c62828",
+    "INFO": "#1565c0",
 }
 
 
@@ -64,17 +78,28 @@ class _TreeCanvas(tk.Canvas):
         self.node_font = tkfont.Font(family="Helvetica", size=16, weight="bold")
         self.edge_font = tkfont.Font(family="Helvetica", size=14)
         self.legend_font = tkfont.Font(family="Helvetica", size=12)
+        self.info_font = tkfont.Font(family="Helvetica", size=12)
         self.node_boxes: Dict[str, Tuple[float, float, float, float]] = {}
+        self.node_entries: Dict[str, List[Tuple[str, str]]] = {}
+        self.info_width = 280
+        self._current_hover: Optional[str] = None
+        self._default_info: List[Tuple[str, str]] = [
+            ("INFO", "Hover a link to inspect inertia checks."),
+        ]
         self.pack(fill="both", expand=True)
         self.bind("<Configure>", self._on_resize)
+        self.bind("<Motion>", self._on_mouse_move)
         self._draw(self.winfo_reqwidth(), self.winfo_reqheight())
         self._draw_legend()
+        self._draw_info_panel(None, self._default_info)
 
     def _on_resize(self, event: tk.Event) -> None:
         self.delete("all")
         self.node_boxes.clear()
+        self.node_entries.clear()
         self._draw(event.width, event.height)
         self._draw_legend()
+        self._draw_info_panel(self._current_hover, self._default_info if self._current_hover is None else self.node_entries.get(self._current_hover, self._default_info))
 
     def _draw(self, width: int, height: int) -> None:
         if not self.scene.nodes:
@@ -87,7 +112,8 @@ class _TreeCanvas(tk.Canvas):
 
         margin_x = 80
         margin_y = 80
-        avail_w = max(width - 2 * margin_x, 1)
+        side_width = self.info_width + margin_x
+        avail_w = max(width - side_width - margin_x, 1)
         avail_h = max(height - 2 * margin_y, 1)
         span_x = max(max_x - min_x, 1e-3)
         span_y = max(max_y - min_y, 1e-3)
@@ -116,6 +142,7 @@ class _TreeCanvas(tk.Canvas):
             shape = style.get("shape", "rectangle")
             fill = style.get("fill", "#e3f2fd")
             outline = style.get("outline", "#1565c0")
+            outline_width = style.get("outline_width", 2)
             if shape == "ellipse":
                 self.create_oval(
                     x0,
@@ -123,7 +150,7 @@ class _TreeCanvas(tk.Canvas):
                     x1,
                     y1,
                     outline=outline,
-                    width=2,
+                    width=outline_width,
                     fill=fill,
                 )
             else:
@@ -133,7 +160,7 @@ class _TreeCanvas(tk.Canvas):
                     x1,
                     y1,
                     outline=outline,
-                    width=2,
+                    width=outline_width,
                     fill=fill,
                 )
             text_color = style.get("font_color", "#263238")
@@ -144,6 +171,8 @@ class _TreeCanvas(tk.Canvas):
                 fill=text_color,
                 font=self.node_font,
             )
+            entries = node.payload.get("check_entries") or [("INFO", "No inertia checks run.")]
+            self.node_entries[node.name] = entries
 
         for edge in self.scene.edges:
             parent_box = self.node_boxes.get(edge.parent)
@@ -156,7 +185,7 @@ class _TreeCanvas(tk.Canvas):
             end_y = child_box[1] + 4
             style = edge.visual_style or {}
             stroke = style.get("stroke", "#424242")
-            width = style.get("width", 2)
+            width = style.get("width", 3)
             self.create_line(
                 start_x,
                 start_y,
@@ -303,13 +332,92 @@ class _TreeCanvas(tk.Canvas):
                     tags="legend",
                 )
 
-            self.create_text(
-                x0 + icon_width + 10,
-                y0 + 10,
-                anchor="w",
-                text=label,
-                fill="#212121",
-                font=self.legend_font,
-                tags="legend",
-            )
+                self.create_text(
+                    x0 + icon_width + 10,
+                    y0 + 10,
+                    anchor="w",
+                    text=label,
+                    fill="#212121",
+                    font=self.legend_font,
+                    tags="legend",
+                )
             y0 += legend_line_height
+
+        current_entries = (
+            self.node_entries.get(self._current_hover)
+            if self._current_hover is not None
+            else self._default_info
+        )
+        self._draw_info_panel(self._current_hover, current_entries)
+    def _on_mouse_move(self, event: tk.Event) -> None:
+        x, y = event.x, event.y
+        for name, (x0, y0, x1, y1) in self.node_boxes.items():
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                if self._current_hover != name:
+                    entries = self.node_entries.get(name, self._default_info)
+                    self._draw_info_panel(name, entries)
+                    self._current_hover = name
+                return
+        if self._current_hover is not None:
+            self._draw_info_panel(None, self._default_info)
+            self._current_hover = None
+
+    def _draw_info_panel(
+        self, link_name: Optional[str], entries: List[Tuple[str, str]]
+    ) -> None:
+        self.delete("info_panel")
+        width = int(self.winfo_width() or self.info_width + 160)
+        height = int(self.winfo_height() or 400)
+        margin_x = 80
+        margin_y = 80
+        panel_x0 = width - self.info_width - margin_x
+        panel_y0 = margin_y
+        panel_x1 = panel_x0 + self.info_width
+        panel_y1 = height - margin_y
+
+        self.create_rectangle(
+            panel_x0,
+            panel_y0,
+            panel_x1,
+            panel_y1,
+            fill="#fafafa",
+            outline="#90a4ae",
+            width=2,
+            tags="info_panel",
+        )
+
+        title = link_name or "Inertia Checks"
+        self.create_text(
+            panel_x0 + 16,
+            panel_y0 + 20,
+            anchor="w",
+            text=title,
+            font=("Helvetica", 16, "bold"),
+            fill="#212121",
+            tags="info_panel",
+        )
+
+        y = panel_y0 + 52
+        line_spacing = 26
+        for status, message in entries:
+            icon = _STATUS_ICONS.get(status, "🔹")
+            color = _STATUS_COLORS.get(status, "#1565c0")
+            self.create_text(
+                panel_x0 + 20,
+                y,
+                anchor="w",
+                text=icon,
+                font=("Helvetica", 14),
+                tags="info_panel",
+            )
+            self.create_text(
+                panel_x0 + 44,
+                y,
+                anchor="w",
+                text=message,
+                font=self.info_font,
+                fill=color,
+                width=self.info_width - 64,
+                tags="info_panel",
+            )
+            y += line_spacing

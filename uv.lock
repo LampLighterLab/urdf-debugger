@@ -300,6 +300,7 @@ source = { editable = "." }
 dependencies = [
     { name = "matplotlib" },
     { name = "networkx" },
+    { name = "numpy" },
     { name = "pytest" },
 ]
 
@@ -312,6 +313,7 @@ dev = [
 requires-dist = [
     { name = "matplotlib", specifier = ">=3.8" },
     { name = "networkx", specifier = ">=3.1" },
+    { name = "numpy", specifier = ">=1.26" },
     { name = "pytest", specifier = ">=8.0" },
 ]
 

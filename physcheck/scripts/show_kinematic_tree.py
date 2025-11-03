@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 from typing import Callable, Sequence
 
+from physcheck.analysis import summarize_model_inertia
 from physcheck.urdf import build_kinematic_tree, load_urdf
 from physcheck.visualization import build_tree_scene, compute_tree_layout
 from physcheck.viewers import TkTreeViewer
@@ -160,6 +161,59 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _print_inertia_summary(results: dict[str, list]):
+    use_color = sys.stdout.isatty()
+
+    def colorize(text: str, code: str) -> str:
+        if not use_color:
+            return text
+        reset = "\033[0m"
+        return f"{code}{text}{reset}"
+
+    GREEN = "\033[92m"
+    RED = "\033[91m"
+    YELLOW = "\033[93m"
+
+    stats = {"ok": 0, "warn": 0, "fail": 0}
+
+    for link_name, checks in results.items():
+        print(f"  Link: {link_name}")
+        if not checks:
+            print("    (no checks run)")
+            continue
+        for check in checks:
+            if check.passed:
+                status_label = "OK"
+                status_color = GREEN
+                stats["ok"] += 1
+            elif check.severity == "warning":
+                status_label = "WARN"
+                status_color = YELLOW
+                stats["warn"] += 1
+            else:
+                status_label = "FAIL"
+                status_color = RED
+                stats["fail"] += 1
+
+            formatted = colorize(f"[{status_label}]", status_color)
+            print(f"    {formatted} {check.check}: {check.message}")
+            if check.details:
+                for key, value in check.details.items():
+                    print(f"      - {key}: {value}")
+
+    summary_parts = []
+    if stats["ok"]:
+        summary_parts.append(colorize(f"{stats['ok']} ok", GREEN))
+    if stats["warn"]:
+        summary_parts.append(colorize(f"{stats['warn']} warnings", YELLOW))
+    if stats["fail"]:
+        summary_parts.append(colorize(f"{stats['fail']} failures", RED))
+    if not summary_parts:
+        summary_parts.append("no checks run")
+
+    print("  Summary: " + ", ".join(summary_parts))
+
+
 def main() -> None:
     args = parse_args()
     try:
@@ -169,9 +223,15 @@ def main() -> None:
         sys.exit(1)
 
     model = load_urdf(urdf_path)
+
+    print("Inertia checks:")
+    inertia_results = summarize_model_inertia(model.links)
+    _print_inertia_summary(inertia_results)
+    print("")
+
     tree = build_kinematic_tree(model)
     positions = compute_tree_layout(tree)
-    scene = build_tree_scene(tree, positions)
+    scene = build_tree_scene(tree, positions, inertia_results)
 
     viewer = TkTreeViewer(scene, title=f"{model.robot_name} kinematic tree")
     viewer.run(output=args.output)
