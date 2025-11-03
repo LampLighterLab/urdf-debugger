@@ -1,37 +1,51 @@
 from __future__ import annotations
 
-from collections import deque
-from typing import Dict, List, Tuple
+from typing import Dict, Tuple
 
 from physcheck.urdf.tree import KinematicTree
 
 
 def compute_tree_layout(tree: KinematicTree) -> Dict[str, Tuple[float, float]]:
-    """Compute 2D positions for drawing a kinematic tree top-down."""
+    """Compute 2D positions for drawing a kinematic tree top-down.
 
-    levels: Dict[int, List[str]] = {}
-    queue = deque([(tree.root, 0)])
-    seen = set()
+    The layout groups siblings tightly under their parent using a simple
+    Reingold–Tilford-style algorithm. Each leaf occupies a unit width and
+    internal nodes are centered above their children.
+    """
 
-    while queue:
-        node, depth = queue.popleft()
-        if node in seen:
-            continue
-        seen.add(node)
-        levels.setdefault(depth, []).append(node)
-        for child in tree.children_of(node):
-            queue.append((child, depth + 1))
+    spans: Dict[str, float] = {}
 
+    def compute_span(node: str) -> float:
+        children = tree.children_of(node)
+        if not children:
+            spans[node] = 1.0
+            return 1.0
+        total = 0.0
+        for child in children:
+            total += compute_span(child)
+        spans[node] = max(total, 1.0)
+        return spans[node]
+
+    compute_span(tree.root)
+
+    horizontal_spacing = 1.8
+    vertical_spacing = 1.2
     positions: Dict[str, Tuple[float, float]] = {}
-    for depth in sorted(levels):
-        nodes = levels[depth]
-        count = len(nodes)
-        if count == 1:
-            positions[nodes[0]] = (0.0, -float(depth))
-            continue
-        spacing = 1.5
-        offset = -(count - 1) * spacing / 2.0
-        for index, node in enumerate(nodes):
-            positions[node] = (offset + index * spacing, -float(depth))
 
+    def assign_positions(node: str, depth: int, left: float) -> None:
+        span = spans[node]
+        center = left + span / 2.0
+        positions[node] = (
+            (center - spans[tree.root] / 2.0) * horizontal_spacing,
+            -depth * vertical_spacing,
+        )
+        children = tree.children_of(node)
+        if not children:
+            return
+        cursor = left
+        for child in children:
+            assign_positions(child, depth + 1, cursor)
+            cursor += spans[child]
+
+    assign_positions(tree.root, 0, 0.0)
     return positions
