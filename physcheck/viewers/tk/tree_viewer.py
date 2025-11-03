@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import tkinter as tk
 from tkinter import font as tkfont
+
+import numpy as np
 
 from physcheck.visualization import TreeScene
 
@@ -24,6 +26,50 @@ _STATUS_ICONS = {
     "FAIL": "🔴",
     "INFO": "🔹",
 }
+
+
+def _inertia_tensor_to_matrix(
+    entries: Tuple[float, float, float, float, float, float],
+) -> np.ndarray:
+    ixx, ixy, ixz, iyy, iyz, izz = entries
+    return np.array(
+        [
+            [ixx, ixy, ixz],
+            [ixy, iyy, iyz],
+            [ixz, iyz, izz],
+        ],
+        dtype=float,
+    )
+
+
+def _estimate_collision_eigenvalues(
+    collisions: Iterable[Any], mass: float
+) -> Optional[np.ndarray]:
+    if not np.isfinite(mass) or mass <= 0.0:
+        return None
+
+    for collision in collisions:
+        geom = getattr(collision, "geometry", None)
+        if geom is None:
+            continue
+        gtype = getattr(geom, "type", "")
+        if gtype == "box" and geom.size:
+            lx, ly, lz = geom.size
+            ixx = (mass / 12.0) * (ly ** 2 + lz ** 2)
+            iyy = (mass / 12.0) * (lx ** 2 + lz ** 2)
+            izz = (mass / 12.0) * (lx ** 2 + ly ** 2)
+            return np.array([ixx, iyy, izz], dtype=float)
+        if gtype == "cylinder" and geom.radius and geom.length:
+            r = geom.radius
+            L = geom.length
+            ixx = iyy = (mass / 12.0) * (3.0 * r ** 2 + L ** 2)
+            izz = 0.5 * mass * r ** 2
+            return np.array([ixx, iyy, izz], dtype=float)
+        if gtype == "sphere" and geom.radius:
+            r = geom.radius
+            moment = 0.4 * mass * r ** 2
+            return np.array([moment, moment, moment], dtype=float)
+    return None
 
 
 class TkTreeViewer:
@@ -211,8 +257,13 @@ class _TreeCanvas(tk.Canvas):
                 fill="#000000",
                 font=self.node_font,
             )
-            entries = node.payload.get("check_entries") or self.info_panel.default_entries
-            self.node_entries[node.name] = list(entries)
+            raw_entries = (
+                node.payload.get("check_entries") or self.info_panel.default_entries
+            )
+            enriched_entries = [
+                self._augment_entry(entry, node.payload) for entry in raw_entries
+            ]
+            self.node_entries[node.name] = enriched_entries
 
         for edge in self.scene.edges:
             parent_box = self.node_boxes.get(edge.parent)
@@ -278,7 +329,9 @@ class _TreeCanvas(tk.Canvas):
                 if self._current_hover != name:
                     self._current_hover = name
                     self._last_selection = name
-                    entries = self.node_entries.get(name, self.info_panel.default_entries)
+                    entries = self.node_entries.get(
+                        name, self.info_panel.default_entries
+                    )
                     self.info_panel.show_entries(name, entries)
                 return
         if self._current_hover is not None:
@@ -291,6 +344,39 @@ class _TreeCanvas(tk.Canvas):
             self._current_hover = None
             if self._last_selection is None:
                 self.info_panel.show_default()
+
+    def _augment_entry(
+        self, entry_data: Dict[str, Any], node_payload: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        result = dict(entry_data)
+        if "details" in result and isinstance(result["details"], dict):
+            result["details"] = dict(result["details"])
+        link = node_payload.get("link")
+        result.setdefault("link", link)
+        inertial = node_payload.get("inertial")
+        if inertial is not None:
+            result.setdefault("mass", getattr(inertial, "mass", None))
+            tensor = getattr(inertial, "inertia", None)
+            if tensor is not None:
+                result.setdefault(
+                    "inertia_matrix",
+                    _inertia_tensor_to_matrix(tensor).tolist(),
+                )
+        details = result.get("details")
+        if not isinstance(details, dict):
+            details = {}
+            result["details"] = details
+        mass_value = result.get("mass")
+        if (
+            mass_value is not None
+            and link is not None
+            and not details.get("expected_eigenvalues")
+        ):
+            collisions = getattr(link, "collisions", ())
+            estimated = _estimate_collision_eigenvalues(collisions, float(mass_value))
+            if estimated is not None:
+                details["expected_eigenvalues"] = estimated.tolist()
+        return result
 
 
 class _InfoPanel(tk.Frame):
@@ -378,7 +464,9 @@ class _InfoPanel(tk.Frame):
         for entry_data in entries:
             status = entry_data.get("status", "INFO")
             headline = entry_data.get("headline", status)
-            summary_text = entry_data.get("summary") or entry_data.get("detail_text") or ""
+            summary_text = (
+                entry_data.get("summary") or entry_data.get("detail_text") or ""
+            )
             card = tk.Frame(
                 self._content,
                 background="#ffffff",
@@ -427,7 +515,13 @@ class _InfoPanel(tk.Frame):
             self._message_labels.append(message_label)
 
             if self._click_handler and entry_data.get("raw_check") is not None:
-                for widget in (card, icon_label, text_container, summary_label, message_label):
+                for widget in (
+                    card,
+                    icon_label,
+                    text_container,
+                    summary_label,
+                    message_label,
+                ):
                     widget.configure(cursor="hand2")
                     widget.bind(
                         "<Button-1>",
@@ -491,9 +585,15 @@ class _LegendCanvas(tk.Canvas):
 
         joint_styles: Dict[str, str] = {}
         for edge in edges:
-            joint_type = edge.payload.get("joint_type") if isinstance(edge.payload, dict) else None
+            joint_type = (
+                edge.payload.get("joint_type")
+                if isinstance(edge.payload, dict)
+                else None
+            )
             if joint_type:
-                joint_styles.setdefault(joint_type, edge.visual_style.get("stroke", "#424242"))
+                joint_styles.setdefault(
+                    joint_type, edge.visual_style.get("stroke", "#424242")
+                )
 
         joint_order = ["revolute", "continuous", "prismatic", "planar", "fixed"]
         for jt in joint_order:
@@ -615,8 +715,12 @@ class _DetailWindow:
         family = node_font.actual("family")
         info_family = info_font.actual("family")
         self._title_font = tkfont.Font(family=family, size=node_size + 6, weight="bold")
-        self._section_font = tkfont.Font(family=family, size=node_size + 2, weight="bold")
-        self._status_font = tkfont.Font(family=info_family, size=info_size + 1, weight="bold")
+        self._section_font = tkfont.Font(
+            family=family, size=node_size + 2, weight="bold"
+        )
+        self._status_font = tkfont.Font(
+            family=info_family, size=info_size + 1, weight="bold"
+        )
         self._body_font = tkfont.Font(family=info_family, size=info_size + 2)
         self._mono_font = tkfont.Font(family="Courier", size=max(info_size + 1, 11))
 
@@ -624,6 +728,9 @@ class _DetailWindow:
         self._detail_panel: Optional[tk.Frame] = None
         self._viz_panel: Optional[tk.Frame] = None
         self._detail_text_labels: List[tk.Label] = []
+        self._figure: Optional[Any] = None
+        self._axes: Optional[Any] = None
+        self._canvas: Optional[Any] = None
 
     def show_entry(self, link_name: str, entry: Dict[str, Any]) -> None:
         self._ensure_window()
@@ -649,7 +756,9 @@ class _DetailWindow:
         container = tk.Frame(top, background="#f5f5f5")
         container.pack(fill="both", expand=True, padx=20, pady=20)
 
-        detail_panel = tk.Frame(container, background="#ffffff", borderwidth=1, relief=tk.SOLID)
+        detail_panel = tk.Frame(
+            container, background="#ffffff", borderwidth=1, relief=tk.SOLID
+        )
         detail_panel.pack(side=tk.LEFT, fill="both", expand=True)
         detail_panel.columnconfigure(0, weight=1)
 
@@ -663,20 +772,32 @@ class _DetailWindow:
         viz_panel.pack(side=tk.RIGHT, fill="both", expand=False, padx=(20, 0))
         viz_panel.pack_propagate(False)
 
-        placeholder = tk.Label(
+        canvas = tk.Canvas(
             viz_panel,
-            text="Visualization tools\ncoming soon",
-            font=self._section_font,
-            background="#e3f2fd",
-            fg="#0d47a1",
-            justify=tk.CENTER,
+            background="#ffffff",
+            highlightthickness=0,
+            borderwidth=0,
         )
-        placeholder.place(relx=0.5, rely=0.5, anchor="center")
+        canvas.pack(fill="both", expand=True, padx=12, pady=12)
+        canvas.bind(
+            "<Configure>",
+            lambda event: self._draw_placeholder(canvas, event.width, event.height),
+        )
+        canvas.after(
+            50,
+            lambda: self._draw_placeholder(canvas, canvas.winfo_width(), canvas.winfo_height()),
+        )
+
+        self._figure = None
+        self._axes = None
+        self._canvas = canvas
 
         self._toplevel = top
         self._detail_panel = detail_panel
         self._viz_panel = viz_panel
-        self._detail_panel.bind("<Configure>", lambda _event: self._update_detail_wraplength())
+        self._detail_panel.bind(
+            "<Configure>", lambda _event: self._update_detail_wraplength()
+        )
 
     def _render_detail(self, link_name: str, entry: Dict[str, Any]) -> None:
         assert self._detail_panel is not None
@@ -776,7 +897,9 @@ class _DetailWindow:
                 fg="#000000",
                 anchor="w",
             )
-            section_label.grid(row=next_row, column=0, sticky="we", padx=24, pady=(24, 8))
+            section_label.grid(
+                row=next_row, column=0, sticky="we", padx=24, pady=(24, 8)
+            )
             next_row += 1
 
             detail_container = tk.Frame(panel, background="#ffffff")
@@ -805,6 +928,7 @@ class _DetailWindow:
         spacer = tk.Frame(panel, background="#ffffff")
         spacer.grid(row=98, column=0, pady=12)
 
+        self._render_visualization(entry)
         self._update_detail_wraplength()
 
     def _render_detail_value(self, parent: tk.Misc, value: Any) -> None:
@@ -860,7 +984,11 @@ class _DetailWindow:
         self._detail_text_labels.append(label)
 
     def _update_detail_wraplength(self) -> None:
-        if not self._detail_text_labels or self._detail_panel is None or not self._detail_panel.winfo_exists():
+        if (
+            not self._detail_text_labels
+            or self._detail_panel is None
+            or not self._detail_panel.winfo_exists()
+        ):
             return
         width = max(self._detail_panel.winfo_width() - 200, 260)
         for label in list(self._detail_text_labels):
@@ -878,3 +1006,273 @@ class _DetailWindow:
         if isinstance(value, (int, float)):
             return self._format_number(value)
         return str(value)
+
+    def _render_visualization(self, entry: Dict[str, Any]) -> None:
+        if self._canvas is None or self._viz_panel is None:
+            return
+
+        matrix_data = entry.get("inertia_matrix")
+        mass = entry.get("mass")
+        details = entry.get("details") or {}
+
+        if matrix_data is None or mass is None:
+            self._show_viz_message("Inertia data unavailable.")
+            return
+
+        matrix = np.array(matrix_data, dtype=float)
+        if matrix.shape != (3, 3):
+            self._show_viz_message("Inertia tensor malformed.")
+            return
+
+        if not np.isfinite(mass) or mass <= 0.0:
+            self._show_viz_message("Mass must be positive to visualize.")
+            return
+
+        try:
+            eigvals, eigvecs = np.linalg.eigh(matrix)
+        except np.linalg.LinAlgError:
+            self._show_viz_message("Failed to compute principal axes.")
+            return
+
+        if np.min(eigvals) < -1e-9:
+            self._show_viz_message("Negative eigenvalues detected.")
+            return
+
+        eigvals = np.clip(eigvals, 0.0, None)
+        actual_axes = self._moments_to_axes(mass, eigvals)
+        if actual_axes is None:
+            self._show_viz_message("Unable to derive ellipsoid axes.")
+            return
+
+        expected_axes = None
+        expected_eigs = details.get("expected_eigenvalues")
+        if expected_eigs is None:
+            link_obj = entry.get("link")
+            collisions = getattr(link_obj, "collisions", ()) if link_obj is not None else ()
+            estimated = _estimate_collision_eigenvalues(collisions, float(mass))
+            if estimated is not None:
+                expected_eigs = estimated
+        if expected_eigs is not None:
+            expected_eigs = np.array(expected_eigs, dtype=float)
+            expected_eigs = np.clip(expected_eigs, 0.0, None)
+            expected_axes = self._moments_to_axes(mass, expected_eigs)
+
+        projected_actual = self._compute_projected_ellipse(actual_axes, eigvecs)
+        if projected_actual is None:
+            self._show_viz_message("Unable to project inertia ellipsoid.")
+            return
+
+        projected_expected = (
+            self._compute_projected_ellipse(expected_axes, eigvecs)
+            if expected_axes is not None
+            else None
+        )
+
+        self._draw_flattened_view(projected_actual, projected_expected)
+
+    def _show_viz_message(self, message: str) -> None:
+        canvas = self._canvas
+        if canvas is None:
+            return
+        canvas.delete("viz")
+        width = canvas.winfo_width()
+        height = canvas.winfo_height()
+        if width <= 0 or height <= 0:
+            return
+        canvas.create_rectangle(
+            0,
+            0,
+            width,
+            height,
+            fill="#ffffff",
+            outline="",
+            tags="viz",
+        )
+        canvas.create_text(
+            width / 2,
+            height / 2,
+            text=message,
+            fill="#0d47a1",
+            font=self._section_font,
+            width=width - 40,
+            justify=tk.CENTER,
+            tags="viz",
+        )
+
+    @staticmethod
+    def _moments_to_axes(mass: float, moments: np.ndarray) -> Optional[np.ndarray]:
+        moments = np.asarray(moments, dtype=float)
+        if moments.size != 3 or not np.all(np.isfinite(moments)):
+            return None
+        m = float(mass)
+        if m <= 0.0 or not np.isfinite(m):
+            return None
+        coeff = 5.0 / (2.0 * m)
+        a2 = coeff * (moments[1] + moments[2] - moments[0])
+        b2 = coeff * (moments[0] + moments[2] - moments[1])
+        c2 = coeff * (moments[0] + moments[1] - moments[2])
+        values = np.array([a2, b2, c2], dtype=float)
+        if np.any(values < -1e-9):
+            return None
+        values = np.clip(values, 0.0, None)
+        return np.sqrt(values)
+
+    def _compute_projected_ellipse(
+        self, semiaxes: np.ndarray | None, rotation: np.ndarray
+    ) -> Optional[Dict[str, Any]]:
+        if semiaxes is None:
+            return None
+
+        rotation = np.array(rotation, dtype=float)
+        if rotation.shape != (3, 3):
+            rotation = np.eye(3)
+
+        radii = np.asarray(semiaxes, dtype=float)
+        if radii.size != 3:
+            return None
+
+        transform = rotation @ np.diag(radii)
+        proj = transform[:2, :]
+        cov = proj @ proj.T
+        try:
+            values, vectors = np.linalg.eigh(cov)
+        except np.linalg.LinAlgError:
+            return None
+        values = np.clip(values, 0.0, None)
+        radii_2d = np.sqrt(values)
+
+        # Sort descending for consistent drawing
+        order = np.argsort(radii_2d)[::-1]
+        radii_2d = radii_2d[order]
+        vectors = vectors[:, order]
+
+        params = np.linspace(0.0, 2.0 * np.pi, 240)
+        circle = np.stack([np.cos(params), np.sin(params)])
+        outline = vectors @ (np.diag(radii_2d) @ circle)
+
+        axis_projections: list[Tuple[float, float]] = []
+        for idx in range(3):
+            vec = rotation[:, idx] * radii[idx]
+            axis_projections.append((vec[0], vec[1]))
+
+        return {
+            "outline": outline,
+            "axes": axis_projections,
+            "radii_2d": radii_2d,
+        }
+
+    def _draw_flattened_view(
+        self,
+        actual: Dict[str, Any],
+        expected: Optional[Dict[str, Any]],
+    ) -> None:
+        canvas = self._canvas
+        if canvas is None:
+            return
+        canvas.delete("viz")
+        width = max(canvas.winfo_width(), 10)
+        height = max(canvas.winfo_height(), 10)
+        center_x = width / 2
+        center_y = height / 2
+
+        scale_base = min(width, height) * 0.45
+        max_radius = float(np.max(actual["radii_2d"]))
+        if expected is not None:
+            max_radius = max(max_radius, float(np.max(expected["radii_2d"])))
+        if not np.isfinite(max_radius) or max_radius <= 0.0:
+            max_radius = 1.0
+        scale = scale_base / max_radius
+
+        canvas.create_rectangle(
+            0,
+            0,
+            width,
+            height,
+            fill="#ffffff",
+            outline="",
+            tags="viz",
+        )
+
+        outline = actual["outline"]
+        x_vals, y_vals = outline[0], outline[1]
+        points = []
+        for x, y in zip(x_vals, y_vals):
+            points.append(center_x + x * scale)
+            points.append(center_y - y * scale)
+        canvas.create_polygon(
+            *points,
+            fill="#ef6c00",
+            outline="#bf360c",
+            width=2,
+            stipple="gray50",
+            tags="viz",
+        )
+
+        # Draw projected principal axes for actual inertia
+        for dx, dy in actual["axes"]:
+            if np.hypot(dx, dy) < 1e-9:
+                continue
+            canvas.create_line(
+                center_x,
+                center_y,
+                center_x + dx * scale,
+                center_y - dy * scale,
+                fill="#bf360c",
+                width=3,
+                tags="viz",
+            )
+
+        if expected is not None:
+            outline = expected["outline"]
+            x_vals, y_vals = outline[0], outline[1]
+            points = []
+            for x, y in zip(x_vals, y_vals):
+                points.append(center_x + x * scale)
+                points.append(center_y - y * scale)
+            canvas.create_polygon(
+                *points,
+                fill="",
+                outline="#004d40",
+                width=2,
+                dash=(6, 4),
+                tags="viz",
+            )
+
+            for dx, dy in expected["axes"]:
+                if np.hypot(dx, dy) < 1e-9:
+                    continue
+                canvas.create_line(
+                    center_x,
+                    center_y,
+                    center_x + dx * scale,
+                    center_y - dy * scale,
+                    fill="#004d40",
+                    width=2,
+                    dash=(4, 4),
+                    tags="viz",
+                )
+
+        canvas.create_text(
+            center_x,
+            20,
+            text="Actual (solid) vs Expected (dashed)",
+            fill="#0d47a1",
+            font=self._status_font,
+            tags="viz",
+        )
+
+    @staticmethod
+    def _draw_placeholder(canvas: tk.Canvas, width: int, height: int) -> None:
+        canvas.delete("viz")
+        if width <= 0 or height <= 0:
+            return
+        canvas.create_rectangle(0, 0, width, height, fill="#ffffff", outline="", tags="viz")
+        canvas.create_text(
+            width / 2,
+            height / 2,
+            text="Select a link to view inertia projection",
+            fill="#0d47a1",
+            justify=tk.CENTER,
+            width=width - 40,
+            tags="viz",
+        )
