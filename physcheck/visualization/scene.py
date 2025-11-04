@@ -93,9 +93,20 @@ def build_tree_scene(
         outline_color, outline_width, status_entries = _derive_status_style(
             checks, has_inertia
         )
-        expected = None
-        if link.collisions and link.inertial is not None:
-            estimated = _estimate_collision_eigenvalues(link.collisions, link.inertial.mass)
+        expected: Optional[List[float]] = None
+        for check in checks:
+            if check.check == "geometry_consistency":
+                details = check.details or {}
+                values = details.get("expected_eigenvalues")
+                if isinstance(values, (list, tuple)) and len(values) == 3:
+                    expected = [float(v) for v in values]
+                break
+
+        if expected is None and link.collisions and link.inertial is not None:
+            estimated = _estimate_collision_eigenvalues(
+                link.collisions,
+                link.inertial.mass,
+            )
             expected = estimated.tolist() if estimated is not None else None
         payload = {
             "link": link,

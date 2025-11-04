@@ -158,6 +158,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional PostScript file path to export the rendering.",
     )
+    parser.add_argument(
+        "--no-gui",
+        action="store_true",
+        help="Skip launching the Tk viewer (print summary only).",
+    )
     return parser.parse_args()
 
 
@@ -232,6 +237,14 @@ def main() -> None:
     tree = build_kinematic_tree(model)
     positions = compute_tree_layout(tree)
     scene = build_tree_scene(tree, positions, inertia_results)
+
+    if args.no_gui:
+        if args.output:
+            print(
+                "Warning: --output is ignored when --no-gui is set; skipping viewer output.",
+                file=sys.stderr,
+            )
+        return
 
     viewer = TkTreeViewer(scene, title=f"{model.robot_name} kinematic tree")
     viewer.run(output=args.output)
