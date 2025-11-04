@@ -9,6 +9,9 @@ Quickstart
 Requirements
 - Python >= 3.13
 - [uv](https://docs.astral.sh/uv/getting-started/installation/) (recommended)
+- Tkinter insallation with Python
+  - [Ubuntu](https://www.pythonguis.com/installation/install-tkinter-linux/): `sudo apt update; sudo apt install python3-tk`
+  - [macOS](https://www.pythonguis.com/installation/install-tkinter-mac/): `brew install python-tk`
 
 Install (editable)
 - `uv venv`
