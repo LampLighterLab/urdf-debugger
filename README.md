@@ -1,39 +1,40 @@
 physcheck
 =========
 
-## Project Plan
+Lightweight URDF inspector that checks inertia tensors and kinematics, shows a simple tree viewer, and can auto-fix implausible inertias from link geometry.
 
-### Phase 1 — URDF ingestion & kinematic inspection
-- Build `physcheck.urdf.loader` on top of a lightweight XML parser (no ROS dependencies) to deserialize URDF files into dataclasses that expose links, joints, inertias, and collision geometry.
-- Add `physcheck.urdf.tree` utilities to derive parent/child relationships and metadata, exposing both structured data and pre-built NetworkX graphs.
-- Provide a CLI entry point (`physcheck cli inspect`) plus a lightweight script (`scripts/show_kinematic_tree.py`) that reuses the tree module to render the kinematic chain.
-- Initial GUI prototype (Qt or WebView) will consume the same tree data to display selectable joints/links.
-- Unit tests focus on loader correctness and tree construction using fixtures from `robots/`.
+Quickstart
+----------
 
-### Phase 2 — Physical consistency checks
-- Create `physcheck.analysis.inertia` to validate inertia matrices (triangle inequality, positive definiteness, eigenvalue ratios).
-- Implement `physcheck.analysis.geometry` to approximate volumes from primitive visual/collision elements and infer density against inertia.
-- Add comparison utilities to flag asymmetries between mirrored limbs by pairing links and reporting geometric/inertial differences.
-- Extend CLI with `physcheck cli check` that aggregates these analyses and emits machine-readable diagnostics for automation.
-- Tests cover analytic edge cases (e.g., singular inertia, mirrored link mismatches) and regression snapshots for known URDFs.
+Requirements
+- Python >= 3.13
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) (recommended)
 
-### Phase 3 — Visualization and editing tools
-- Build a 3D visualization module (`physcheck.visualization`) backed by `pythreejs` or `vtk` for mesh rendering and frame visualization.
-- Layer a selectable scene graph that highlights joints/links, overlays inertia ellipsoids, and displays collision/visual meshes.
-- Add interactive editing hooks (e.g., inertia tweaking, symmetry alignment) that feed back into URDF diffs.
-- Package a standalone GUI app (Qt/PySide) that orchestrates visualization, analysis, and export workflows.
-- Integration tests simulate user flows via headless GUI harnesses where possible; snapshot tests for rendered scenes ensure regression coverage.
+Install (editable)
+- `uv venv`
+- `uv pip install -e .`
 
-### Tooling & environment
-- Manage dependencies with `uv`; expose development tasks (lint, test, format, docs) through `uv tool` scripts.
-- Adopt `pytest` with hypothesis-based generators for numerical checks, plus golden files for CLI outputs.
-- Enable CI (GitHub Actions) to run unit/integration suites and publish artifacts (reports, visualizations).
+Run the tests
+- `uv run pytest -q`
 
-## Planned Test Suite
-- `tests/test_loader.py`: verify URDFs load, links/joints counts match expectations, inertia tensors parse correctly.
-- `tests/test_tree.py`: ensure kinematic tree generation yields correct parentage and root detection; round-trip to adjacency lists.
-- `tests/test_cli_inspect.py`: smoke-test CLI entry to print the tree and handle invalid paths gracefully.
-- `tests/test_inertia_checks.py`: numerical unit tests for triangle inequality, positive-definite detection, eigenvalue ratio thresholds.
-- `tests/test_geometry_density.py`: compare computed densities against known fixtures; guard against division-by-zero on missing masses.
-- `tests/test_symmetry.py`: mock mirrored link data to ensure asymmetry reports flag mismatching masses/inertia/geometry.
-- GUI/visualization tests: screenshot comparisons or geometry hash checks for deterministic rendering once visualization stack lands.
+Use
+- Kinematic tree + inertia summary:
+  - Interactive under `robots/`: `uv run python -m physcheck.scripts.show_kinematic_tree`
+  - By name: `uv run python -m physcheck.scripts.show_kinematic_tree cartpole`
+  - By path: `uv run python -m physcheck.scripts.show_kinematic_tree robots/cartpole/urdf/cartpole.urdf`
+  - Headless (no GUI): add `--no-gui` to print only the summary
+  - Export viewer to PostScript: add `--output out.ps`
+
+- Auto-fix implausible inertias from geometry:
+  - `uv run python -m physcheck.scripts.fix_inertials cartpole`
+  - Flags:
+    - `--include-warnings` to also fix warning-level issues
+    - `--include-triangle` or `--skip-triangle` to control triangle-inequality fixes non-interactively
+    - `--prefer-geometry {collision,visual}` to pick geometry when both exist
+    - `--output PATH` to choose output (defaults to `*_fixed.urdf` next to source)
+    - `-y/--yes` to skip prompts
+  - Notes:
+    - Only box, cylinder, and sphere primitives are used to estimate inertia
+    - Mass is preserved; the tensor is rotated into the link frame, and inertial origin rpy is set to zero so components match link axes
+    - Mesh-only links are skipped
+
